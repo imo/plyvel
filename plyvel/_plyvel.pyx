@@ -23,8 +23,16 @@ from weakref import ref as weakref_ref
 cimport cython
 
 from cpython cimport bool
+from cpython.buffer cimport (
+    Py_buffer,
+    PyObject_GetBuffer,
+    PyBuffer_Release,
+    PyBUF_SIMPLE,
+)
+
 from libc.stdint cimport uint64_t
 from libc.stdlib cimport malloc, free
+from libc.string cimport const_char
 from libcpp.string cimport string
 from libcpp cimport bool as c_bool
 
@@ -298,8 +306,7 @@ cdef class DB:
 
         return db_get(self, key, default, read_options)
 
-    def put(self, bytes key not None, bytes value not None, *,
-            bool sync=False):
+    def put(self, bytes key not None, value not None, *, bool sync=False):
         if self._db is NULL:
             raise RuntimeError("Database is closed")
 
@@ -307,11 +314,14 @@ cdef class DB:
         write_options.sync = sync
 
         cdef Slice key_slice = Slice(key, len(key))
-        cdef Slice value_slice = Slice(value, len(value))
+        cdef Py_buffer value_buffer
+        PyObject_GetBuffer(value, &value_buffer, PyBUF_SIMPLE)
+        cdef Slice value_slice = Slice(<const_char *>value_buffer.buf, value_buffer.len)
         cdef Status st
-
         with nogil:
             st = self._db.Put(write_options, key_slice, value_slice)
+
+        PyBuffer_Release(&value_buffer)
         raise_for_status(st)
 
     def delete(self, bytes key not None, *, bool sync=False):
@@ -456,7 +466,7 @@ cdef class PrefixedDB:
             verify_checksums=verify_checksums,
             fill_cache=fill_cache)
 
-    def put(self, bytes key not None, bytes value not None, *,
+    def put(self, bytes key not None, value not None, *,
             bool sync=False):
         return self.db.put(self.prefix + key, value, sync=sync)
 
@@ -555,7 +565,7 @@ cdef class WriteBatch:
     def __dealloc__(self):
         del self._write_batch
 
-    def put(self, bytes key not None, bytes value not None):
+    def put(self, bytes key not None, value not None):
         if self.db._db is NULL:
             raise RuntimeError("Database is closed")
 
@@ -563,9 +573,12 @@ cdef class WriteBatch:
             key = self.prefix + key
 
         cdef Slice key_slice = Slice(key, len(key))
-        cdef Slice value_slice = Slice(value, len(value))
+        cdef Py_buffer value_buffer
+        PyObject_GetBuffer(value, &value_buffer, PyBUF_SIMPLE)
+        cdef Slice value_slice = Slice(<const_char *>value_buffer.buf, value_buffer.len)
         with nogil:
             self._write_batch.Put(key_slice, value_slice)
+        PyBuffer_Release(&value_buffer)
 
     def delete(self, bytes key not None):
         if self.db._db is NULL:
